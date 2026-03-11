@@ -36,6 +36,7 @@ dependencies = [
     "pyvcd>=0.2.4",
     "amaranth~=0.5.0",
     "usb-protocol~=0.9.2",
+    "amaranth-yosys>=0.50.0.0.post121",
 ]
 
 [project.optional-dependencies]

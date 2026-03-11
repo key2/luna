@@ -152,3 +152,7 @@ dmypy.json
 # SimpleSoc generated files
 soc.ld
 resources.h
+
+# PDM tooling
+.pdm-python
+pdm.lock
