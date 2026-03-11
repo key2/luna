@@ -6,9 +6,9 @@
 """USB 3.1 Gen2 Loopback Core — PHY-agnostic top-level module.
 
 This design implements a USB 3.1 Gen2 loopback device that exposes a
-standard Gen2 PIPE interface at its boundary.  It does **not** instantiate
-any PHY IP — the user connects the PIPE ports to whatever Gen2 PHY chip
-or IP core they have (Gowin usb31dec, Synopsys, etc.).
+standard :class:`Gen2PIPEInterface` at its boundary.  It does **not**
+instantiate any PHY IP — the user connects the PIPE ports to whatever
+Gen2 PHY chip or IP core they have.
 
 Architecture::
 
@@ -23,7 +23,7 @@ Architecture::
     │       │         │   data Rx/Tx)│                     │
     │       ▼         └──────┬───────┘                     │
     │  ┌─────────────────────┴──────────────────────────┐  │
-    │  │          PIPE Interface Ports                   │  │
+    │  │     Gen2PIPEInterface  (from interface/pipe.py) │  │
     │  │  pclk, tx_data[63:0], rx_data[63:0], ...       │  │
     │  └────────────────────────────────────────────────┘  │
     └──────────────────────┬───────────────────────────────┘
@@ -31,40 +31,15 @@ Architecture::
                            ▼
               ┌────────────────────────┐
               │  External Gen2 PHY     │
-              │  (usb31dec, etc.)      │
               └────────────────────────┘
 
 Top-level ports
 ---------------
-PIPE data (directly to/from external PHY):
-    pipe_pclk            — PIPE clock input from PHY (~156.25 MHz)
-    pipe_tx_data[63:0]   — TX data to PHY
-    pipe_tx_sync_head[3:0]
-    pipe_tx_start_block
-    pipe_tx_data_valid
-    pipe_rx_data[63:0]   — RX data from PHY
-    pipe_rx_sync_head[3:0]
-    pipe_rx_start_block
-    pipe_rx_data_valid
+The PIPE signals come directly from :class:`Gen2PIPEInterface`
+(defined in ``luna.gateware.interface.pipe``).
 
-PIPE control (directly to/from external PHY):
-    pipe_tx_detect_rx_loopback
-    pipe_tx_elec_idle
-    pipe_rx_polarity
-    pipe_rx_termination
-    pipe_power_down[1:0]
-    pipe_elasticity_buf_mode
-
-PIPE status (from external PHY):
-    pipe_rx_elec_idle
-    pipe_rx_status[2:0]
-    pipe_phy_status
-    pipe_power_present
-
-Core infrastructure:
+Additional ports:
     rst_n                — Active-low reset for the core
-
-Status outputs:
     led_link_ready       — Link trained and in U0
     led_gen2_active      — Gen2 speed negotiated
     led_data_activity    — Data is being looped back
@@ -73,58 +48,47 @@ Status outputs:
 from amaranth import *
 from amaranth.lib.fifo import SyncFIFO
 
+from luna.gateware.interface.pipe import Gen2PIPEInterface
+
 from ..link.layer import Gen2LinkLayer
 from ..ltssm import Gen2LTSSMController
-from ..interfaces import Gen2RawSuperSpeedStream
 
 
 class Gen2LoopbackTop(Elaboratable):
-    """USB 3.1 Gen2 Loopback Core with PIPE interface.
+    """USB 3.1 Gen2 Loopback Core with :class:`Gen2PIPEInterface`.
 
-    This is a PHY-agnostic loopback device.  All PIPE signals are exposed
-    as top-level ports so the generated Verilog can be wired to any
-    USB 3.1 Gen2 PIPE PHY in the FPGA vendor's IDE.
+    This is a PHY-agnostic loopback device.  The ``pipe`` attribute is a
+    :class:`Gen2PIPEInterface` whose signals become the top-level PIPE
+    ports in the generated Verilog.  Wire them to any USB 3.1 Gen2 PIPE
+    PHY in your FPGA vendor's IDE.
 
     Parameters
     ----------
     fifo_depth : int
         Depth of the loopback FIFO in 72-bit entries (default 512).
+
+    Attributes
+    ----------
+    pipe : Gen2PIPEInterface
+        The standard Gen2 PIPE interface — connect to your external PHY.
+    rst_n : Signal
+        Active-low reset for the core.
+    led_link_ready : Signal
+        Asserted when the link is trained and in U0.
+    led_gen2_active : Signal
+        Asserted when Gen2 speed is negotiated.
+    led_data_activity : Signal
+        Asserted when data is being looped back.
     """
 
     def __init__(self, fifo_depth=512):
         self._fifo_depth = fifo_depth
 
+        # ── Gen2 PIPE interface (the boundary to the external PHY) ─
+        self.pipe = Gen2PIPEInterface()
+
         # ── Core reset ─────────────────────────────────────────────
         self.rst_n = Signal(reset=1, name="rst_n")
-
-        # ── PIPE clock (input from external PHY) ──────────────────
-        self.pipe_pclk = Signal(name="pipe_pclk")
-
-        # ── PIPE TX data path (outputs to external PHY) ───────────
-        self.pipe_tx_data        = Signal(64, name="pipe_tx_data")
-        self.pipe_tx_sync_head   = Signal(4,  name="pipe_tx_sync_head")
-        self.pipe_tx_start_block = Signal(name="pipe_tx_start_block")
-        self.pipe_tx_data_valid  = Signal(name="pipe_tx_data_valid")
-
-        # ── PIPE RX data path (inputs from external PHY) ──────────
-        self.pipe_rx_data        = Signal(64, name="pipe_rx_data")
-        self.pipe_rx_sync_head   = Signal(4,  name="pipe_rx_sync_head")
-        self.pipe_rx_start_block = Signal(name="pipe_rx_start_block")
-        self.pipe_rx_data_valid  = Signal(name="pipe_rx_data_valid")
-
-        # ── PIPE control (outputs to external PHY) ────────────────
-        self.pipe_tx_detect_rx_loopback = Signal(name="pipe_tx_detect_rx_loopback")
-        self.pipe_tx_elec_idle          = Signal(reset=1, name="pipe_tx_elec_idle")
-        self.pipe_rx_polarity           = Signal(name="pipe_rx_polarity")
-        self.pipe_rx_termination        = Signal(name="pipe_rx_termination")
-        self.pipe_power_down            = Signal(2, reset=0b11, name="pipe_power_down")
-        self.pipe_elasticity_buf_mode   = Signal(name="pipe_elasticity_buf_mode")
-
-        # ── PIPE status (inputs from external PHY) ────────────────
-        self.pipe_rx_elec_idle  = Signal(name="pipe_rx_elec_idle")
-        self.pipe_rx_status     = Signal(3, name="pipe_rx_status")
-        self.pipe_phy_status    = Signal(name="pipe_phy_status")
-        self.pipe_power_present = Signal(name="pipe_power_present")
 
         # ── Status LEDs ────────────────────────────────────────────
         self.led_link_ready    = Signal(name="led_link_ready")
@@ -134,6 +98,8 @@ class Gen2LoopbackTop(Elaboratable):
     # ----------------------------------------------------------------
     def elaborate(self, platform):
         m = Module()
+
+        pipe = self.pipe
 
         # ════════════════════════════════════════════════════════════
         # Submodules
@@ -150,14 +116,12 @@ class Gen2LoopbackTop(Elaboratable):
         # ════════════════════════════════════════════════════════════
         # PIPE RX → Link Layer  (external PHY → our core)
         # ════════════════════════════════════════════════════════════
-        # Convert the flat PIPE RX signals into the Gen2RawSuperSpeedStream
-        # that the link layer expects.
 
         m.d.comb += [
-            link.phy_source.payload     .eq(self.pipe_rx_data),
-            link.phy_source.valid       .eq(self.pipe_rx_data_valid),
-            link.phy_source.sync_head   .eq(self.pipe_rx_sync_head),
-            link.phy_source.start_block .eq(self.pipe_rx_start_block),
+            link.phy_source.payload     .eq(pipe.rx_data),
+            link.phy_source.valid       .eq(pipe.rx_data_valid),
+            link.phy_source.sync_head   .eq(pipe.rx_sync_head),
+            link.phy_source.start_block .eq(pipe.rx_start_block),
         ]
 
         # ════════════════════════════════════════════════════════════
@@ -165,10 +129,10 @@ class Gen2LoopbackTop(Elaboratable):
         # ════════════════════════════════════════════════════════════
 
         m.d.comb += [
-            self.pipe_tx_data        .eq(link.phy_sink.payload),
-            self.pipe_tx_data_valid  .eq(link.phy_sink.valid),
-            self.pipe_tx_sync_head   .eq(link.phy_sink.sync_head),
-            self.pipe_tx_start_block .eq(link.phy_sink.start_block),
+            pipe.tx_data        .eq(link.phy_sink.payload),
+            pipe.tx_data_valid  .eq(link.phy_sink.valid),
+            pipe.tx_sync_head   .eq(link.phy_sink.sync_head),
+            pipe.tx_start_block .eq(link.phy_sink.start_block),
         ]
 
         # ════════════════════════════════════════════════════════════
@@ -177,19 +141,19 @@ class Gen2LoopbackTop(Elaboratable):
 
         # LTSSM drives PIPE control outputs
         m.d.comb += [
-            self.pipe_power_down             .eq(ltssm.power_down),
-            self.pipe_tx_elec_idle           .eq(ltssm.tx_elec_idle),
-            self.pipe_rx_termination         .eq(ltssm.rx_termination),
-            self.pipe_rx_polarity            .eq(ltssm.rx_polarity),
-            self.pipe_tx_detect_rx_loopback  .eq(ltssm.tx_detect_rx_loopback),
+            pipe.power_down             .eq(ltssm.power_down),
+            pipe.tx_elec_idle           .eq(ltssm.tx_elec_idle),
+            pipe.rx_termination         .eq(ltssm.rx_termination),
+            pipe.rx_polarity            .eq(ltssm.rx_polarity),
+            pipe.tx_detect_rx_loopback  .eq(ltssm.tx_detect_rx_loopback),
         ]
 
         # PIPE status inputs feed the LTSSM
         m.d.comb += [
-            ltssm.phy_status    .eq(self.pipe_phy_status),
-            ltssm.rx_elec_idle  .eq(self.pipe_rx_elec_idle),
-            ltssm.rx_status     .eq(self.pipe_rx_status),
-            ltssm.power_present .eq(self.pipe_power_present),
+            ltssm.phy_status    .eq(pipe.phy_status),
+            ltssm.rx_elec_idle  .eq(pipe.rx_elec_idle),
+            ltssm.rx_status     .eq(pipe.rx_status),
+            ltssm.power_present .eq(pipe.power_present),
         ]
 
         # ════════════════════════════════════════════════════════════
@@ -238,39 +202,44 @@ class Gen2LoopbackTop(Elaboratable):
 
     # ----------------------------------------------------------------
     def get_ports(self):
-        """Return all top-level ports for Verilog generation."""
+        """Return all top-level ports for Verilog generation.
+
+        Includes every signal from the :class:`Gen2PIPEInterface` plus
+        the core reset and status LEDs.
+        """
+        pipe = self.pipe
         return [
             # Core reset
             self.rst_n,
 
-            # PIPE clock
-            self.pipe_pclk,
+            # Gen2PIPEInterface signals (from luna.gateware.interface.pipe)
+            pipe.pclk,
 
             # PIPE TX data (to external PHY)
-            self.pipe_tx_data,
-            self.pipe_tx_sync_head,
-            self.pipe_tx_start_block,
-            self.pipe_tx_data_valid,
+            pipe.tx_data,
+            pipe.tx_sync_head,
+            pipe.tx_start_block,
+            pipe.tx_data_valid,
 
             # PIPE RX data (from external PHY)
-            self.pipe_rx_data,
-            self.pipe_rx_sync_head,
-            self.pipe_rx_start_block,
-            self.pipe_rx_data_valid,
+            pipe.rx_data,
+            pipe.rx_sync_head,
+            pipe.rx_start_block,
+            pipe.rx_data_valid,
 
             # PIPE control (to external PHY)
-            self.pipe_tx_detect_rx_loopback,
-            self.pipe_tx_elec_idle,
-            self.pipe_rx_polarity,
-            self.pipe_rx_termination,
-            self.pipe_power_down,
-            self.pipe_elasticity_buf_mode,
+            pipe.tx_detect_rx_loopback,
+            pipe.tx_elec_idle,
+            pipe.rx_polarity,
+            pipe.rx_termination,
+            pipe.power_down,
+            pipe.elasticity_buf_mode,
 
             # PIPE status (from external PHY)
-            self.pipe_rx_elec_idle,
-            self.pipe_rx_status,
-            self.pipe_phy_status,
-            self.pipe_power_present,
+            pipe.rx_elec_idle,
+            pipe.rx_status,
+            pipe.phy_status,
+            pipe.power_present,
 
             # Status LEDs
             self.led_link_ready,
