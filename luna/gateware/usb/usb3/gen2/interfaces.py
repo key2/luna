@@ -9,6 +9,10 @@ from amaranth import *
 
 from ....stream import StreamInterface
 
+# Re-export Gen2PIPEInterface from the canonical location in gateware/interface/pipe.py.
+# This keeps backward compatibility for code that imports from this module.
+from ....interface.pipe import Gen2PIPEInterface
+
 
 class Gen2BlockType:
     """128b/132b block type constants for USB 3.1 Gen2.
@@ -32,109 +36,6 @@ class Gen2BlockType:
     END_BAD    = 0x87  # End Bad (CRC invalid)
     LINK_CMD   = 0x4B  # Link Command
     NOP        = 0x00  # No Operation
-
-
-class Gen2PIPEInterface:
-    """PIPE interface for USB 3.1 Gen2 (64-bit @ ~156.25 MHz).
-
-    This is a signal bundle (not Elaboratable) that mirrors the signals
-    exposed by a Gen2 PHY such as the usb31dec hard IP. The interface
-    carries 64-bit data words with 128b/132b block framing instead of
-    the 8b/10b symbol encoding used by Gen1.
-
-    The signal directions are given from the MAC perspective:
-    TX signals are driven by the MAC toward the PHY, and RX signals
-    are driven by the PHY toward the MAC.
-
-    Parameters
-    ----------
-    None
-
-    Attributes
-    ----------
-    pclk : Signal(), output from PHY
-        PIPE clock output from the PHY (~156.25 MHz for Gen2).
-
-    tx_data : Signal(64), input to PHY
-        Transmit data bus (64-bit).
-    tx_sync_head : Signal(4), input to PHY
-        Transmit sync header (DATA=0x3, CONTROL=0xC).
-    tx_start_block : Signal(), input to PHY
-        Indicates the start of a new 128b/132b block on the TX path.
-    tx_data_valid : Signal(), input to PHY
-        Indicates that the TX data bus carries valid data.
-
-    rx_data : Signal(64), output from PHY
-        Receive data bus (64-bit).
-    rx_sync_head : Signal(4), output from PHY
-        Receive sync header (DATA=0x3, CONTROL=0xC).
-    rx_start_block : Signal(), output from PHY
-        Indicates the start of a new 128b/132b block on the RX path.
-    rx_data_valid : Signal(), output from PHY
-        Indicates that the RX data bus carries valid data.
-
-    tx_detect_rx_loopback : Signal(), input to PHY
-        Directs the PHY to perform receiver detection or loopback.
-    tx_elec_idle : Signal(reset=1), input to PHY
-        Directs the PHY transmitter into Electrical Idle.
-    rx_polarity : Signal(), input to PHY
-        If asserted, the PHY receiver inverts the received data.
-    rx_termination : Signal(), input to PHY
-        If asserted, the PHY presents receiver terminations.
-    power_down : Signal(2, reset=0b11), input to PHY
-        Power management state (P0=0b00, P1=0b01, P2=0b10, P3=0b11).
-    elasticity_buf_mode : Signal(), input to PHY
-        Elastic buffer operating mode.
-
-    rx_elec_idle : Signal(), output from PHY
-        Indicates detection of Electrical Idle on the receive path.
-    rx_status : Signal(3), output from PHY
-        Receive status indication.
-    phy_status : Signal(), output from PHY
-        PHY operation completion status.
-    power_present : Signal(), output from PHY
-        Indicates voltage is present on Vbus.
-    """
-
-    def __init__(self):
-        #
-        # Clock
-        #
-        self.pclk                   = Signal()
-
-        #
-        # TX data path
-        #
-        self.tx_data                = Signal(64)
-        self.tx_sync_head           = Signal(4)
-        self.tx_start_block         = Signal()
-        self.tx_data_valid          = Signal()
-
-        #
-        # RX data path
-        #
-        self.rx_data                = Signal(64)
-        self.rx_sync_head           = Signal(4)
-        self.rx_start_block         = Signal()
-        self.rx_data_valid          = Signal()
-
-        #
-        # Control signals
-        #
-        self.tx_detect_rx_loopback  = Signal()
-        self.tx_elec_idle           = Signal(reset=1)
-        self.rx_polarity            = Signal()
-        self.rx_termination         = Signal()
-        self.power_down             = Signal(2, reset=0b11)  # P3 default
-        self.elasticity_buf_mode    = Signal()
-
-        #
-        # Status signals
-        #
-        self.rx_elec_idle           = Signal()
-        self.rx_status              = Signal(3)
-        self.phy_status             = Signal()
-        self.power_present          = Signal()
 
 
 class Gen2RawSuperSpeedStream(StreamInterface):

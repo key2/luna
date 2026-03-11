@@ -19,8 +19,6 @@ from .coding import (
     stream_matches_block_type,
 )
 
-from .phy import USB31DecPHY
-
 from .crc import (
     Gen2HeaderCRC,
     Gen2DataCRC,

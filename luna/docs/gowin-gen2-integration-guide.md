@@ -297,74 +297,80 @@ class GowinGW5AGen2Platform(LUNAPlatform):
                           open("usb3_1_phy_top_define.vh", "rb").read())
 ```
 
-### Step B: Instantiating the Gen2 PHY
+### Step B: Creating a Gen2PIPEInterface
 
-The [`USB31DecPHY`](../gateware/usb/usb3/gen2/phy.py) class wraps the Gowin
-`usb3_1_phy` Verilog module and bridges its PIPE interface to LUNA's Gen2
-stream types:
+LUNA provides the [`Gen2PIPEInterface`](../gateware/interface/pipe.py) signal
+bundle that defines the standard PIPE signals for a Gen2 PHY.  This is the
+boundary between LUNA's Gen2 link layer and your external PHY.
 
 ```python
-from luna.gateware.usb.usb3.gen2 import USB31DecPHY
+from luna.gateware.interface.pipe import Gen2PIPEInterface
 
-# Inside your Elaboratable.elaborate():
-m.submodules.phy = phy = USB31DecPHY()
+# Create the PIPE signal bundle
+pipe = Gen2PIPEInterface()
 ```
 
-This creates:
-- [`phy.pipe`](../gateware/usb/usb3/gen2/interfaces.py:37) — the
-  `Gen2PIPEInterface` signal bundle (64-bit PIPE signals)
-- [`phy.source`](../gateware/usb/usb3/gen2/phy.py:56) — RX stream
-  (`Gen2RawSuperSpeedStream`, PHY → LUNA)
-- [`phy.sink`](../gateware/usb/usb3/gen2/phy.py:57) — TX stream
-  (`Gen2RawSuperSpeedStream`, LUNA → PHY)
-- SERDES interface signals (directly connected to FPGA primitives)
+This creates a signal bundle with:
+- **TX data path:** `pipe.tx_data` (64-bit), `pipe.tx_sync_head` (4-bit),
+  `pipe.tx_start_block`, `pipe.tx_data_valid`
+- **RX data path:** `pipe.rx_data` (64-bit), `pipe.rx_sync_head` (4-bit),
+  `pipe.rx_start_block`, `pipe.rx_data_valid`
+- **Control signals:** `pipe.power_down`, `pipe.tx_elec_idle`,
+  `pipe.rx_termination`, `pipe.rx_polarity`, etc.
+- **Status signals:** `pipe.phy_status`, `pipe.rx_elec_idle`,
+  `pipe.rx_status`, `pipe.power_present`
 
-### Step C: Connecting SERDES Signals to FPGA Primitives
+You then connect these signals to your vendor-specific PHY IP (Gowin
+`usb31dec`, Synopsys, etc.) in your FPGA vendor's IDE or in your
+top-level Amaranth design.
 
-The `USB31DecPHY` exposes raw SERDES signals that must be connected to the
-Gowin SERDES hard macro. The exact primitive name depends on your GW5A variant:
+### Step C: Connecting PIPE Signals to Your External PHY
+
+The PIPE signals from `Gen2PIPEInterface` must be connected to your
+vendor-specific Gen2 PHY.  The exact wiring depends on your PHY IP.
+Here is an example using a Gowin `usb31dec.v` PHY instantiated as a
+Verilog `Instance`:
 
 ```python
-# Connect SERDES signals from USB31DecPHY to Gowin SERDES primitive.
-# This is a simplified example — adapt to your specific GW5A SERDES primitive.
+# Example: connecting Gen2PIPEInterface to a Gowin usb31dec.v PHY.
+# Adapt the port names to match your specific PHY IP.
 
-m.submodules.serdes = Instance("GW5A_SERDES_10G",
-    # Reference clock
-    i_REFCLK       = refclk,
+m.submodules.phy = Instance("usb3_1_phy",
+    # PIPE clock
+    o_pclk              = pipe.pclk,
 
-    # TX data path (from PHY to SERDES)
-    i_TXDATA       = phy.serdes_txdata,          # 80-bit TX data
-    o_PCS_TX_CLK   = phy.serdes_pcs_tx_clk,      # TX PCS clock
+    # PIPE TX data path
+    i_PipeTxData        = pipe.tx_data,
+    i_PipeTxSyncHead    = pipe.tx_sync_head,
+    i_PipeTxStartBlock  = pipe.tx_start_block,
+    i_PipeTxDataValid   = pipe.tx_data_valid,
 
-    # RX data path (from SERDES to PHY)
-    o_RXDATA       = phy.serdes_rxdata,           # 88-bit RX data
-    o_PCS_RX_CLK   = phy.serdes_pcs_rx_clk,      # RX PCS clock
-    o_PMA_RX_LOCK  = phy.serdes_pma_rx_lock,      # PMA lock indicator
+    # PIPE RX data path
+    o_PipeRxData        = pipe.rx_data,
+    o_PipeRxSyncHead    = pipe.rx_sync_head,
+    o_PipeRxStartBlock  = pipe.rx_start_block,
+    o_PipeRxDataValid   = pipe.rx_data_valid,
 
-    # FIFO status
-    o_TX_FIFO_WRUSEWD = phy.serdes_tx_fifo_wrusewd,  # 5-bit TX FIFO usage
-    o_RX_FIFO_RDUSEWD = phy.serdes_rx_fifo_rdusewd,  # 5-bit RX FIFO usage
-    o_RXFIFO_AEMPTY   = phy.serdes_rxfifo_aempty,     # RX FIFO almost empty
-    o_RX_VLD          = phy.serdes_rx_vld,             # RX data valid
-    o_RXELECIDLE      = phy.serdes_rxelecidle,         # RX electrical idle
-    o_ASTAT           = phy.serdes_astat,              # 6-bit alignment status
+    # PIPE control
+    i_TxDetectRx_loopback   = pipe.tx_detect_rx_loopback,
+    i_TxElecIdle             = pipe.tx_elec_idle,
+    i_RxPolarity             = pipe.rx_polarity,
+    i_RxTermination          = pipe.rx_termination,
+    i_PowerDown              = pipe.power_down,
+    i_ElasticityBufferMode   = pipe.elasticity_buf_mode,
 
-    # UPAR (User Parameter Access Register) interface
-    i_UPAR_CLK     = phy.serdes_upar_clk,
-    o_UPAR_WREN    = phy.serdes_upar_wren,
-    o_UPAR_ADDR    = phy.serdes_upar_addr,        # 24-bit address
-    o_UPAR_WRDATA  = phy.serdes_upar_wrdata,      # 32-bit write data
-    o_UPAR_RDEN    = phy.serdes_upar_rden,
-    i_UPAR_RDDATA  = phy.serdes_upar_rddata,      # 32-bit read data
-    i_UPAR_RDVLD   = phy.serdes_upar_rdvld,
-    i_UPAR_READY   = phy.serdes_upar_ready,
+    # PIPE status
+    o_RxElecIdle        = pipe.rx_elec_idle,
+    o_RxStatus          = pipe.rx_status,
+    o_PhyStatus         = pipe.phy_status,
+    o_PowerPresent      = pipe.power_present,
 
-    # PLL status
-    o_Q0_QPLL0_OK = phy.q0_qpll0_ok,
-    o_Q0_QPLL1_OK = phy.q0_qpll1_ok,
-    o_Q1_QPLL0_OK = phy.q1_qpll0_ok,
-    o_Q1_QPLL1_OK = phy.q1_qpll1_ok,
-    o_CPLL_OK      = phy.cpll_ok,
+    # SERDES signals — connect to your FPGA's SERDES primitive
+    # (these are between the PHY IP and the SERDES, not part of LUNA)
+    # i_serdes_upar_clk_i = ...,
+    # o_serdes_txdata_o   = ...,
+    # i_serdes_rxdata_i   = ...,
+    # ...
 )
 ```
 
@@ -378,10 +384,20 @@ from luna.gateware.usb.usb3.gen2 import Gen2LinkLayer
 
 m.submodules.link = link = Gen2LinkLayer(ss_clock_frequency=156.25e6)
 
-# Connect PHY streams to link layer
+# Connect PIPE RX signals to link layer source stream
 m.d.comb += [
-    link.phy_source.stream_eq(phy.source),   # RX: PHY → Link
-    phy.sink.stream_eq(link.phy_sink),        # TX: Link → PHY
+    link.phy_source.payload     .eq(pipe.rx_data),
+    link.phy_source.valid       .eq(pipe.rx_data_valid),
+    link.phy_source.sync_head   .eq(pipe.rx_sync_head),
+    link.phy_source.start_block .eq(pipe.rx_start_block),
+]
+
+# Connect link layer sink stream to PIPE TX signals
+m.d.comb += [
+    pipe.tx_data        .eq(link.phy_sink.payload),
+    pipe.tx_data_valid  .eq(link.phy_sink.valid),
+    pipe.tx_sync_head   .eq(link.phy_sink.sync_head),
+    pipe.tx_start_block .eq(link.phy_sink.start_block),
 ]
 ```
 
@@ -409,21 +425,21 @@ from luna.gateware.usb.usb3.gen2 import Gen2LTSSMController
 
 m.submodules.ltssm = ltssm = Gen2LTSSMController(ss_clock_frequency=156.25e6)
 
-# Connect LTSSM outputs to PHY control signals
+# Connect LTSSM outputs to PIPE control signals
 m.d.comb += [
-    phy.pipe.power_down             .eq(ltssm.power_down),
-    phy.pipe.tx_elec_idle           .eq(ltssm.tx_elec_idle),
-    phy.pipe.rx_termination         .eq(ltssm.rx_termination),
-    phy.pipe.rx_polarity            .eq(ltssm.rx_polarity),
-    phy.pipe.tx_detect_rx_loopback  .eq(ltssm.tx_detect_rx_loopback),
+    pipe.power_down             .eq(ltssm.power_down),
+    pipe.tx_elec_idle           .eq(ltssm.tx_elec_idle),
+    pipe.rx_termination         .eq(ltssm.rx_termination),
+    pipe.rx_polarity            .eq(ltssm.rx_polarity),
+    pipe.tx_detect_rx_loopback  .eq(ltssm.tx_detect_rx_loopback),
 ]
 
-# Connect PHY status signals to LTSSM inputs
+# Connect PIPE status signals to LTSSM inputs
 m.d.comb += [
-    ltssm.phy_status     .eq(phy.pipe.phy_status),
-    ltssm.rx_elec_idle   .eq(phy.pipe.rx_elec_idle),
-    ltssm.rx_status      .eq(phy.pipe.rx_status),
-    ltssm.power_present  .eq(phy.pipe.power_present),
+    ltssm.phy_status     .eq(pipe.phy_status),
+    ltssm.rx_elec_idle   .eq(pipe.rx_elec_idle),
+    ltssm.rx_status      .eq(pipe.rx_status),
+    ltssm.power_present  .eq(pipe.power_present),
 ]
 ```
 
@@ -530,8 +546,8 @@ Here is a complete top-level design that ties everything together:
 
 from amaranth import *
 
+from luna.gateware.interface.pipe import Gen2PIPEInterface
 from luna.gateware.usb.usb3.gen2 import (
-    USB31DecPHY,
     Gen2LinkLayer,
     Gen2LTSSMController,
     SpeedMux,
@@ -541,12 +557,16 @@ from luna.gateware.usb.usb3.gen2 import (
 class USB31Gen2Device(Elaboratable):
     """Complete USB 3.1 Gen2 device top-level.
 
-    This module instantiates the Gowin Gen2 PHY, link layer, LTSSM,
+    This module creates a Gen2PIPEInterface, link layer, LTSSM,
     and speed mux, providing a ready-to-use Gen2 USB device core.
+    The user connects the PIPE signals to their own Gen2 PHY IP.
     """
 
     def __init__(self, ss_clock_frequency=156.25e6):
         self._ss_clock_frequency = ss_clock_frequency
+
+        # PIPE interface — connect to your external Gen2 PHY
+        self.pipe = Gen2PIPEInterface()
 
         # Status outputs
         self.link_ready = Signal()
@@ -556,68 +576,60 @@ class USB31Gen2Device(Elaboratable):
     def elaborate(self, platform):
         m = Module()
 
-        # ──────────────────────────────────────────────────────────
-        # 1. Instantiate the Gowin Gen2 PHY
-        # ──────────────────────────────────────────────────────────
-        m.submodules.phy = phy = USB31DecPHY()
-
-        # Connect SERDES signals to platform resources.
-        # (Platform-specific — see Step C above for details.)
-        #
-        # In a real design, you would connect phy.serdes_* signals
-        # to the Gowin SERDES primitive here. For example:
-        #
-        #   serdes = platform.request("usb31_serdes", 0)
-        #   m.submodules.serdes_inst = Instance("GW5A_SERDES_10G",
-        #       i_TXDATA      = phy.serdes_txdata,
-        #       o_RXDATA      = phy.serdes_rxdata,
-        #       o_PCS_TX_CLK  = phy.serdes_pcs_tx_clk,
-        #       o_PCS_RX_CLK  = phy.serdes_pcs_rx_clk,
-        #       ...
-        #   )
+        pipe = self.pipe
 
         # ──────────────────────────────────────────────────────────
-        # 2. Create the "ss" clock domain from the PHY's pclk
+        # 1. Create the "ss" clock domain from the PHY's pclk
         # ──────────────────────────────────────────────────────────
         m.domains += ClockDomain("ss")
         m.d.comb += [
-            ClockSignal("ss").eq(phy.pipe.pclk),
+            ClockSignal("ss").eq(pipe.pclk),
         ]
 
         # ──────────────────────────────────────────────────────────
-        # 3. Instantiate the Gen2 Link Layer
+        # 2. Instantiate the Gen2 Link Layer
         # ──────────────────────────────────────────────────────────
         m.submodules.link = link = Gen2LinkLayer(
             ss_clock_frequency=self._ss_clock_frequency
         )
 
-        # Connect PHY ↔ Link Layer streams
+        # Connect PIPE RX → Link Layer source stream
         m.d.comb += [
-            link.phy_source.stream_eq(phy.source),  # RX: PHY → Link
-            phy.sink.stream_eq(link.phy_sink),       # TX: Link → PHY
+            link.phy_source.payload     .eq(pipe.rx_data),
+            link.phy_source.valid       .eq(pipe.rx_data_valid),
+            link.phy_source.sync_head   .eq(pipe.rx_sync_head),
+            link.phy_source.start_block .eq(pipe.rx_start_block),
+        ]
+
+        # Connect Link Layer sink stream → PIPE TX
+        m.d.comb += [
+            pipe.tx_data        .eq(link.phy_sink.payload),
+            pipe.tx_data_valid  .eq(link.phy_sink.valid),
+            pipe.tx_sync_head   .eq(link.phy_sink.sync_head),
+            pipe.tx_start_block .eq(link.phy_sink.start_block),
         ]
 
         # ──────────────────────────────────────────────────────────
-        # 4. Instantiate the Gen2 LTSSM Controller
+        # 3. Instantiate the Gen2 LTSSM Controller
         # ──────────────────────────────────────────────────────────
         m.submodules.ltssm = ltssm = Gen2LTSSMController(
             ss_clock_frequency=self._ss_clock_frequency
         )
 
-        # Connect LTSSM ↔ PHY control/status
+        # Connect LTSSM ↔ PIPE control/status
         m.d.comb += [
-            # LTSSM → PHY control
-            phy.pipe.power_down             .eq(ltssm.power_down),
-            phy.pipe.tx_elec_idle           .eq(ltssm.tx_elec_idle),
-            phy.pipe.rx_termination         .eq(ltssm.rx_termination),
-            phy.pipe.rx_polarity            .eq(ltssm.rx_polarity),
-            phy.pipe.tx_detect_rx_loopback  .eq(ltssm.tx_detect_rx_loopback),
+            # LTSSM → PIPE control
+            pipe.power_down             .eq(ltssm.power_down),
+            pipe.tx_elec_idle           .eq(ltssm.tx_elec_idle),
+            pipe.rx_termination         .eq(ltssm.rx_termination),
+            pipe.rx_polarity            .eq(ltssm.rx_polarity),
+            pipe.tx_detect_rx_loopback  .eq(ltssm.tx_detect_rx_loopback),
 
-            # PHY → LTSSM status
-            ltssm.phy_status                .eq(phy.pipe.phy_status),
-            ltssm.rx_elec_idle              .eq(phy.pipe.rx_elec_idle),
-            ltssm.rx_status                 .eq(phy.pipe.rx_status),
-            ltssm.power_present             .eq(phy.pipe.power_present),
+            # PIPE → LTSSM status
+            ltssm.phy_status                .eq(pipe.phy_status),
+            ltssm.rx_elec_idle              .eq(pipe.rx_elec_idle),
+            ltssm.rx_status                 .eq(pipe.rx_status),
+            ltssm.power_present             .eq(pipe.power_present),
         ]
 
         # ──────────────────────────────────────────────────────────
@@ -704,7 +716,7 @@ The Gen2 PHY outputs a `pclk` signal at ~156.25 MHz. This clock drives the
 ```python
 # Create the "ss" clock domain from the PHY's pclk output
 m.domains += ClockDomain("ss")
-m.d.comb += ClockSignal("ss").eq(phy.pipe.pclk)
+m.d.comb += ClockSignal("ss").eq(pipe.pclk)
 ```
 
 All Gen2 modules ([`Gen2LinkLayer`](../gateware/usb/usb3/gen2/link/layer.py),
@@ -715,64 +727,43 @@ domain.
 
 ### SERDES Signal Mapping
 
-The [`USB31DecPHY`](../gateware/usb/usb3/gen2/phy.py:13) exposes these SERDES
-signals that must be connected to the Gowin SERDES hard macro:
-
-| USB31DecPHY Signal | Width | Dir | SERDES Connection |
-|---|---|---|---|
-| `serdes_upar_clk` | 1 | in | UPAR clock (fabric clock ÷ 8) |
-| `serdes_upar_wren` | 1 | out | UPAR write enable |
-| `serdes_upar_addr` | 24 | out | UPAR address bus |
-| `serdes_upar_wrdata` | 32 | out | UPAR write data |
-| `serdes_upar_rden` | 1 | out | UPAR read enable |
-| `serdes_upar_rddata` | 32 | in | UPAR read data |
-| `serdes_upar_rdvld` | 1 | in | UPAR read data valid |
-| `serdes_upar_ready` | 1 | in | UPAR ready |
-| `serdes_txdata` | 80 | out | TX data to SERDES |
-| `serdes_rxdata` | 88 | in | RX data from SERDES |
-| `serdes_pcs_tx_clk` | 1 | in | PCS TX clock |
-| `serdes_pcs_rx_clk` | 1 | in | PCS RX clock |
-| `serdes_pma_rx_lock` | 1 | in | PMA RX lock indicator |
-| `serdes_tx_fifo_wrusewd` | 5 | in | TX FIFO write usage |
-| `serdes_rx_fifo_rdusewd` | 5 | in | RX FIFO read usage |
-| `serdes_rxfifo_aempty` | 1 | in | RX FIFO almost empty |
-| `serdes_rx_vld` | 1 | in | RX data valid |
-| `serdes_rxelecidle` | 1 | in | RX electrical idle |
-| `serdes_astat` | 6 | in | Alignment status |
-| `q0_qpll0_ok` | 1 | in | Quad 0 QPLL0 lock |
-| `q0_qpll1_ok` | 1 | in | Quad 0 QPLL1 lock |
-| `q1_qpll0_ok` | 1 | in | Quad 1 QPLL0 lock |
-| `q1_qpll1_ok` | 1 | in | Quad 1 QPLL1 lock |
-| `cpll_ok` | 1 | in | Channel PLL lock |
+SERDES signals are between your vendor-specific PHY IP and the FPGA's SERDES
+primitive — they are **not** part of LUNA.  The exact signals depend on your
+PHY.  For example, the Gowin `usb31dec.v` PHY uses 80-bit TX / 88-bit RX
+SERDES data, UPAR register access, and PLL status signals.  Consult your
+PHY vendor's documentation for the complete signal list.
 
 ### Reset Sequencing
 
-The PHY requires a specific reset sequence:
+The PHY typically requires a specific reset sequence.  This is
+PHY-vendor-specific and not part of LUNA.  A typical sequence is:
 
-1. **Assert reset** — hold `phy.rst_n` low for at least 10 µs after power-up
-2. **Wait for PLL lock** — monitor `phy.cpll_ok` and `phy.q0_qpll0_ok`
-3. **Release reset** — deassert `phy.rst_n` (drive high)
-4. **Wait for PHY ready** — the PHY will assert `phy.pipe.phy_status` when
+1. **Assert reset** — hold the PHY reset low for at least 10 µs after power-up
+2. **Wait for PLL lock** — monitor the PHY's PLL lock indicators
+3. **Release reset** — deassert the PHY reset
+4. **Wait for PHY ready** — the PHY will assert `pipe.phy_status` when
    initialization is complete
 
 ```python
-# Example reset sequencing (simplified)
+# Example reset sequencing (simplified, adapt to your PHY)
+phy_rst_n = Signal(reset=0)
 reset_counter = Signal(range(int(156.25e6 * 20e-6)))  # 20 µs counter
 
 with m.FSM(domain="sync"):
     with m.State("RESET"):
-        m.d.comb += phy.rst_n.eq(0)
+        m.d.comb += phy_rst_n.eq(0)
         m.d.sync += reset_counter.eq(reset_counter + 1)
         with m.If(reset_counter == int(156.25e6 * 10e-6)):
             m.next = "WAIT_PLL"
 
     with m.State("WAIT_PLL"):
-        m.d.comb += phy.rst_n.eq(0)
-        with m.If(phy.cpll_ok & phy.q0_qpll0_ok):
-            m.next = "RELEASE"
+        m.d.comb += phy_rst_n.eq(0)
+        # Check your PHY's PLL lock signals here
+        # with m.If(pll_locked):
+        #     m.next = "RELEASE"
 
     with m.State("RELEASE"):
-        m.d.comb += phy.rst_n.eq(1)
+        m.d.comb += phy_rst_n.eq(1)
         # PHY is now initializing; LTSSM will handle the rest
 ```
 
@@ -782,7 +773,7 @@ with m.FSM(domain="sync"):
 
 ### Gen2PIPEInterface Signals
 
-Source: [`gateware/usb/usb3/gen2/interfaces.py`](../gateware/usb/usb3/gen2/interfaces.py:37)
+Source: [`gateware/interface/pipe.py`](../gateware/interface/pipe.py) (also re-exported from `gateware/usb/usb3/gen2/interfaces.py`)
 
 | Signal | Width | Direction | Description |
 |--------|-------|-----------|-------------|
@@ -954,10 +945,9 @@ Key signals to monitor:
 
 | Module | File | Description |
 |--------|------|-------------|
-| [`USB31DecPHY`](../gateware/usb/usb3/gen2/phy.py:13) | `gateware/usb/usb3/gen2/phy.py` | Amaranth wrapper for the Gowin `usb31dec.v` PHY. Instantiates the Verilog module and bridges PIPE signals to LUNA stream types. |
-| [`Gen2PIPEInterface`](../gateware/usb/usb3/gen2/interfaces.py:37) | `gateware/usb/usb3/gen2/interfaces.py` | Signal bundle for the Gen2 PIPE interface (64-bit data + sync headers + control/status). |
-| [`Gen2RawSuperSpeedStream`](../gateware/usb/usb3/gen2/interfaces.py:140) | `gateware/usb/usb3/gen2/interfaces.py` | Stream interface for raw PHY-level Gen2 data (64-bit + sync header + start_block). |
-| [`Gen2SuperSpeedStreamInterface`](../gateware/usb/usb3/gen2/interfaces.py:180) | `gateware/usb/usb3/gen2/interfaces.py` | Stream interface for application-layer Gen2 data (64-bit payload + 8-bit per-byte valid). |
+| [`Gen2PIPEInterface`](../gateware/interface/pipe.py) | `gateware/interface/pipe.py` | Signal bundle for the Gen2 PIPE interface (64-bit data + sync headers + control/status). Also re-exported from `gateware/usb/usb3/gen2/interfaces.py`. |
+| [`Gen2RawSuperSpeedStream`](../gateware/usb/usb3/gen2/interfaces.py) | `gateware/usb/usb3/gen2/interfaces.py` | Stream interface for raw PHY-level Gen2 data (64-bit + sync header + start_block). |
+| [`Gen2SuperSpeedStreamInterface`](../gateware/usb/usb3/gen2/interfaces.py) | `gateware/usb/usb3/gen2/interfaces.py` | Stream interface for application-layer Gen2 data (64-bit payload + 8-bit per-byte valid). |
 
 ### Link Layer Modules
 
@@ -999,7 +989,6 @@ Key signals to monitor:
 
 ```
 Elaboratable
-├── USB31DecPHY                    # PHY wrapper (Verilog instance)
 ├── Gen2LinkLayer                  # Top-level link layer
 │   ├── Gen2BlockParser            # Block classification
 │   ├── Gen2HeaderPacketReceiver   # Header RX + CRC-16
@@ -1014,7 +1003,7 @@ Elaboratable
 └── Gen2DataCRC                    # CRC-32 engine (64-bit datapath)
 
 Signal Bundles (not Elaboratable):
-├── Gen2PIPEInterface              # PIPE signal bundle
+├── Gen2PIPEInterface              # PIPE signal bundle (in gateware/interface/pipe.py)
 ├── Gen2RawSuperSpeedStream        # Raw PHY stream (extends StreamInterface)
 └── Gen2SuperSpeedStreamInterface  # Application data stream (extends StreamInterface)
 ```
@@ -1145,10 +1134,14 @@ m.submodules += FFSynchronizer(
 All Gen2 public classes can be imported from the top-level package:
 
 ```python
+# Gen2 PIPE interface (canonical location)
+from luna.gateware.interface.pipe import Gen2PIPEInterface
+
+# All other Gen2 public classes
 from luna.gateware.usb.usb3.gen2 import (
     # Interfaces and types
     Gen2BlockType,
-    Gen2PIPEInterface,
+    Gen2PIPEInterface,          # also re-exported here for convenience
     Gen2RawSuperSpeedStream,
     Gen2SuperSpeedStreamInterface,
 
@@ -1157,9 +1150,6 @@ from luna.gateware.usb.usb3.gen2 import (
     is_control_block,
     get_control_subtype,
     stream_matches_block_type,
-
-    # PHY wrapper
-    USB31DecPHY,
 
     # CRC engines
     Gen2HeaderCRC,
